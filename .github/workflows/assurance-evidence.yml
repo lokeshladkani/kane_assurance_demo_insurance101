@@ -1,0 +1,67 @@
+name: Assurance & Evidence (kane-cli)
+
+# The assurance design phase (ingest -> extract -> review -> design -> author) is done
+# locally by a human, once, and the resulting *_test.md files are committed under tests/.
+# CI's job is repeatable execution only: install, authenticate, replay the committed suite,
+# validate evidence, and publish results/artifacts. This keeps CI free (no design/authoring
+# credits spent per run) and keeps every run's tests requirement-traceable.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  assurance-evidence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install kane-cli
+        run: npm install -g @testmuai/kane-cli@latest
+
+      - name: Authenticate kane-cli
+        run: kane-cli login --username "${{ secrets.LT_USERNAME }}" --access-key "${{ secrets.LT_ACCESS_KEY }}"
+
+      - name: Replay committed test suite
+        run: kane-cli testrun run tests/*_test.md --headless --on-failure continue
+
+      - name: Validate evidence packs
+        if: always()
+        run: |
+          shopt -s nullglob
+          packs=(.testmuai/evidence/*.evidence)
+          if [ ${#packs[@]} -eq 0 ]; then
+            echo "::warning::no evidence packs found"
+            exit 0
+          fi
+          status=0
+          for pack in "${packs[@]}"; do
+            echo "validating $pack"
+            kane-cli evidence validate "$pack" --json || status=1
+          done
+          exit $status
+
+      - name: Upload evidence packs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidence-packs
+          path: .testmuai/evidence/*.evidence
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: .testmuai/tests/**/output-*/**
+          if-no-files-found: ignore
+          retention-days: 14
